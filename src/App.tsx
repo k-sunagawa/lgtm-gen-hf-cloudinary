@@ -74,6 +74,7 @@ export default function App() {
   const [favoriteStatus, setFavoriteStatus] = useState<{ type: 'error' | 'success' | 'loading'; msg: string } | null>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const resultAreaRef = useRef<HTMLDivElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch('/api/config')
@@ -165,6 +166,40 @@ export default function App() {
   useEffect(() => {
     if (lastImg) renderLGTM(lastImg);
   }, [lastImg, renderLGTM]);
+
+  const handleImageUpload = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      e.target.value = '';
+      const [targetW, targetH] = size.split('x').map(Number);
+      const img = new Image();
+      const objectUrl = URL.createObjectURL(file);
+      img.onload = () => {
+        URL.revokeObjectURL(objectUrl);
+        // 高さ基準でスケール、幅は中央クロップ or 黒埋め
+        const scale = targetH / img.naturalHeight;
+        const scaledW = Math.round(img.naturalWidth * scale);
+        const offscreen = document.createElement('canvas');
+        offscreen.width = targetW;
+        offscreen.height = targetH;
+        const ctx = offscreen.getContext('2d')!;
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, targetW, targetH);
+        const drawX = Math.round((targetW - scaledW) / 2);
+        ctx.drawImage(img, drawX, 0, scaledW, targetH);
+        const resized = new Image();
+        resized.onload = () => setLastImg(resized);
+        resized.src = offscreen.toDataURL('image/png');
+      };
+      img.onerror = () => {
+        URL.revokeObjectURL(objectUrl);
+        setStatus({ type: 'error', msg: '画像の読み込みに失敗しました' });
+      };
+      img.src = objectUrl;
+    },
+    [size]
+  );
 
   const generate = async () => {
     if (!useServerToken && !token.trim()) {
@@ -356,6 +391,25 @@ export default function App() {
               ))}
             </select>
           </div>
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0' }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
+          <span style={{ fontSize: '0.75rem', color: 'var(--muted, #888)' }}>または</span>
+          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
+        </div>
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="label">既存画像をアップロードして LGTM を追加</label>
+          <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageUpload} />
+          <button
+            type="button"
+            className="actionBtn btnDownload"
+            style={{ fontSize: '0.85rem' }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎 画像を選択
+          </button>
+          <p className="hint" style={{ marginTop: 4 }}>選択中の Size（{size}）に合わせてリサイズします</p>
         </div>
 
         <hr className="divider" />
