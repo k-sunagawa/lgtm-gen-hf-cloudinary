@@ -1,5 +1,7 @@
 # LGTM Generator
 
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 HuggingFace の画像生成 AI で「LGTM」文字入り画像を生成し、Cloudinary にアップロードして PR レビュー用の Markdown URL として利用するツール。
 
 - **フロントエンド**: React + TypeScript (Vite)
@@ -116,3 +118,7 @@ lgtm-gen/
 | `npm run dev` | Vite + Express を同時起動（開発用） |
 | `npm run build` | TypeScript + Vite ビルド |
 | `npm start` | Express で dist と API を配信 |
+
+## ライセンス
+
+[MIT License](LICENSE) © 2026 k-sunagawa
