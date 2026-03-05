@@ -1,10 +1,12 @@
-import 'dotenv/config';
+import dotenv from 'dotenv';
 import express from 'express';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// .env を server.js と同じディレクトリから読み込む（cwd に依存しない）
+dotenv.config({ path: path.join(__dirname, '.env') });
 
 const ROUTER_URL = 'https://router.huggingface.co';
 
@@ -117,5 +119,9 @@ app.listen(PORT, () => {
   console.log(`LGTM Generator: http://localhost:${PORT}`);
   if (HF_TOKEN) console.log('HF_TOKEN from env: using server proxy');
   else console.log('HF_TOKEN not set: enter token in the form');
-  if (CLOUDINARY_CLOUD_NAME) console.log('Cloudinary configured: upload enabled');
+  if (CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) {
+    console.log('Cloudinary configured: upload enabled');
+  } else {
+    console.log('Cloudinary not set: add CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET to .env for favorites');
+  }
 });
