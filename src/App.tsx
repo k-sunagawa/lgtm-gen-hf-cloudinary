@@ -34,6 +34,7 @@ const SUBTITLE_STORAGE_KEY = 'lgtm-gen-subtitle';
 interface ApiConfig {
   useServerToken: boolean;
   hasUpload: boolean;
+  hasCloudinaryAdmin?: boolean;
 }
 
 function getStoredToken(): string {
@@ -57,6 +58,7 @@ function getStoredSubtitle(): string {
 export default function App() {
   const [useServerToken, setUseServerToken] = useState(false);
   const [hasUpload, setHasUpload] = useState(false);
+  const [hasCloudinaryAdmin, setHasCloudinaryAdmin] = useState(false);
   const [token, setToken] = useState(getStoredToken);
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<string>(MODELS[0].value);
@@ -82,10 +84,12 @@ export default function App() {
       .then((c) => {
         setUseServerToken(c.useServerToken);
         setHasUpload(c.hasUpload);
+        setHasCloudinaryAdmin(!!c.hasCloudinaryAdmin);
       })
       .catch(() => {
         setUseServerToken(false);
         setHasUpload(false);
+        setHasCloudinaryAdmin(false);
       });
   }, []);
 
@@ -337,7 +341,7 @@ export default function App() {
       </header>
 
       {page === 'gallery' ? (
-        <Gallery onBack={() => setPage('generator')} />
+        <Gallery onBack={() => setPage('generator')} hasCloudinaryAdmin={hasCloudinaryAdmin} />
       ) : null}
 
       <div className="card" style={{ display: page === 'generator' ? undefined : 'none' }}>
