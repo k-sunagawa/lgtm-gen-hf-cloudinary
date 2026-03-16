@@ -351,7 +351,7 @@ export default function App() {
       const e = err as Error;
       let msg = e.message;
       if (e.message === 'Failed to fetch' || e.name === 'TypeError') {
-        msg = 'サーバーへの接続に失敗しました。ターミナルで「npm run dev」が実行中か確認し、http://localhost:5173 で開き直してください。';
+        msg = 'サーバーへの接続に失敗しました。ターミナルで「npm run dev」が実行中か確認し、http://localhost:15173 で開き直してください。';
       }
       setStatus({ type: 'error', msg });
     } finally {

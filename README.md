@@ -67,8 +67,8 @@ CLOUDINARY_UPLOAD_PRESET=your_preset_name
 npm run dev
 ```
 
-- Vite dev server: http://localhost:5173
-- Express API: http://localhost:3000
+- Vite dev server: http://localhost:15173
+- Express API: http://localhost:13000
 
 ### 本番
 
@@ -77,7 +77,7 @@ npm run build
 npm start
 ```
 
-Express（:3000）が `dist/` を静的配信する。
+Express（:13000）が `dist/` を静的配信する。
 
 ## 使い方
 

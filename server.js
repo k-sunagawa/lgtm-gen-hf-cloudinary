@@ -11,7 +11,7 @@ dotenv.config({ path: path.join(__dirname, '.env') });
 const ROUTER_URL = 'https://router.huggingface.co';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 13000;
 const HF_TOKEN = process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || null;
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || null;
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || null;
