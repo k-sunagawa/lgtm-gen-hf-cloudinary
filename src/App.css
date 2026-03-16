@@ -182,6 +182,20 @@ header {
   color: #000;
 }
 
+.generateBtn.btnSearch {
+  border-color: #00ccff;
+  color: #00ccff;
+}
+
+.generateBtn.btnSearch:hover:not(:disabled) {
+  background: #00ccff;
+  color: #000;
+}
+
+.generateBtn.btnSearch.loading::after {
+  background: #00ccff;
+}
+
 .generateBtn:disabled {
   border-color: var(--muted);
   color: var(--muted);

@@ -35,6 +35,13 @@ interface ApiConfig {
   useServerToken: boolean;
   hasUpload: boolean;
   hasCloudinaryAdmin?: boolean;
+  hasImageSearch?: boolean;
+}
+
+interface SearchImageItem {
+  link: string;
+  thumbnailLink: string;
+  title: string;
 }
 
 function getStoredToken(): string {
@@ -59,6 +66,7 @@ export default function App() {
   const [useServerToken, setUseServerToken] = useState(false);
   const [hasUpload, setHasUpload] = useState(false);
   const [hasCloudinaryAdmin, setHasCloudinaryAdmin] = useState(false);
+  const [hasImageSearch, setHasImageSearch] = useState(true);
   const [token, setToken] = useState(getStoredToken);
   const [prompt, setPrompt] = useState('');
   const [model, setModel] = useState<string>(MODELS[0].value);
@@ -74,6 +82,9 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState<'generator' | 'gallery'>('generator');
   const [favoriteStatus, setFavoriteStatus] = useState<{ type: 'error' | 'success' | 'loading'; msg: string } | null>(null);
+  const [tokenExpanded, setTokenExpanded] = useState(false);
+  const [searchResults, setSearchResults] = useState<SearchImageItem[] | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const resultAreaRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -85,11 +96,13 @@ export default function App() {
         setUseServerToken(c.useServerToken);
         setHasUpload(c.hasUpload);
         setHasCloudinaryAdmin(!!c.hasCloudinaryAdmin);
+        setHasImageSearch(c.hasImageSearch !== false);
       })
       .catch(() => {
         setUseServerToken(false);
         setHasUpload(false);
         setHasCloudinaryAdmin(false);
+        setHasImageSearch(true);
       });
   }, []);
 
@@ -170,6 +183,84 @@ export default function App() {
   useEffect(() => {
     if (lastImg) renderLGTM(lastImg);
   }, [lastImg, renderLGTM]);
+
+  const search = async () => {
+    if (!prompt.trim()) {
+      setStatus({ type: 'error', msg: '検索するキーワードを入力してください' });
+      return;
+    }
+    setSearchLoading(true);
+    setSearchResults(null);
+    setStatus(null);
+    try {
+      const res = await fetch(`/api/image-search?q=${encodeURIComponent(prompt.trim())}`);
+      const text = await res.text();
+      let json: { items?: SearchImageItem[]; error?: string };
+      try {
+        json = JSON.parse(text);
+      } catch {
+        throw new Error('API が正しく応答しませんでした。npm run dev でサーバーが起動しているか確認してください。');
+      }
+      if (!res.ok) throw new Error(json.error || res.statusText);
+      setSearchResults(json.items || []);
+      if (!json.items?.length) {
+        setStatus({ type: 'error', msg: '検索結果がありませんでした' });
+      }
+    } catch (err) {
+      setStatus({ type: 'error', msg: (err as Error).message });
+    } finally {
+      setSearchLoading(false);
+    }
+  };
+
+  const handleSearchImageSelect = useCallback(
+    async (imageUrl: string) => {
+      setStatus(null);
+      try {
+        const res = await fetch(`/api/fetch-image?url=${encodeURIComponent(imageUrl)}`);
+        const text = await res.text();
+        let data: { dataUrl?: string; error?: string };
+        try {
+          data = JSON.parse(text);
+        } catch {
+          throw new Error('画像の取得に失敗しました');
+        }
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        const { dataUrl } = data;
+        if (!dataUrl) throw new Error('画像の取得に失敗しました');
+        const [targetW, targetH] = size.split('x').map(Number);
+        const img = new Image();
+        await new Promise<void>((resolve, reject) => {
+          img.onload = () => resolve();
+          img.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+          img.src = dataUrl;
+        });
+        const scale = targetH / img.naturalHeight;
+        const scaledW = Math.round(img.naturalWidth * scale);
+        const offscreen = document.createElement('canvas');
+        offscreen.width = targetW;
+        offscreen.height = targetH;
+        const ctx = offscreen.getContext('2d')!;
+        ctx.fillStyle = '#000000';
+        ctx.fillRect(0, 0, targetW, targetH);
+        const drawX = Math.round((targetW - scaledW) / 2);
+        ctx.drawImage(img, drawX, 0, scaledW, targetH);
+        const resized = new Image();
+        await new Promise<void>((resolve, reject) => {
+          resized.onload = () => resolve();
+          resized.onerror = () => reject(new Error('画像の読み込みに失敗しました'));
+          resized.src = offscreen.toDataURL('image/png');
+        });
+        setLastImg(resized);
+        setSearchResults(null);
+        setStatus({ type: 'success', msg: '✓ 画像を選択しました' });
+        resultAreaRef.current?.scrollIntoView({ behavior: 'smooth' });
+      } catch (err) {
+        setStatus({ type: 'error', msg: (err as Error).message });
+      }
+    },
+    [size]
+  );
 
   const handleImageUpload = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -341,38 +432,73 @@ export default function App() {
       </header>
 
       {page === 'gallery' ? (
-        <Gallery onBack={() => setPage('generator')} hasCloudinaryAdmin={hasCloudinaryAdmin} />
+        <Gallery hasCloudinaryAdmin={hasCloudinaryAdmin} />
       ) : null}
 
       <div className="card" style={{ display: page === 'generator' ? undefined : 'none' }}>
-        <div className="field">
-          <label className="label">Hugging Face Token</label>
-          <input
-            type="password"
-            className="input"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="hf_..."
-            autoComplete="off"
-          />
-          <p className="hint">
-            <a href="https://huggingface.co/settings/tokens" target="_blank" rel="noreferrer">
-              huggingface.co/settings/tokens
-            </a>
-            で無料取得（Read権限のみでOK）
-          </p>
+        {/* 画像選択セクション（一番上） */}
+        <div className="field" style={{ marginBottom: 0 }}>
+          <label className="label">既存画像をアップロードして LGTM を追加</label>
+          <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageUpload} />
+          <button
+            type="button"
+            className="actionBtn btnDownload"
+            style={{ fontSize: '0.85rem' }}
+            onClick={() => fileInputRef.current?.click()}
+          >
+            📎 画像を選択
+          </button>
+          <p className="hint" style={{ marginTop: 4 }}>選択中の Size（{size}）に合わせてリサイズします</p>
         </div>
 
-        <div className="field">
-          <label className="label">Image Prompt</label>
-          <textarea
-            className="textarea"
-            rows={3}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder={'例: a cute shiba inu sitting in a meadow, watercolor style\n※英語推奨'}
-          />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '16px 0' }}>
+          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
+          <span style={{ fontSize: '0.75rem', color: 'var(--muted, #888)' }}>または</span>
+          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
         </div>
+
+        {/* Hugging Face Token（非表示・トルツメ） */}
+        {!useServerToken && (
+          <div className="field" style={{ marginBottom: 16 }}>
+            <button
+              type="button"
+              className="label"
+              onClick={() => setTokenExpanded((e) => !e)}
+              style={{
+                background: 'none',
+                border: 'none',
+                cursor: 'pointer',
+                padding: 0,
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                color: 'inherit',
+                fontFamily: 'inherit',
+              }}
+            >
+              <span style={{ transform: tokenExpanded ? 'rotate(90deg)' : 'none', transition: 'transform 0.2s' }}>▶</span>
+              Hugging Face Token {token ? '（設定済み）' : ''}
+            </button>
+            {tokenExpanded && (
+              <div style={{ marginTop: 8 }}>
+                <input
+                  type="password"
+                  className="input"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  placeholder="hf_..."
+                  autoComplete="off"
+                />
+                <p className="hint">
+                  <a href="https://huggingface.co/settings/tokens/new?ownUserPermissions=inference.serverless.write&tokenType=fineGrained" target="_blank" rel="noreferrer">
+                    Fine-grained トークン
+                  </a>
+                  を作成し「Make calls to Inference Providers」権限を付与してください
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="row">
           <div className="field">
@@ -397,26 +523,98 @@ export default function App() {
           </div>
         </div>
 
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '4px 0' }}>
-          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
-          <span style={{ fontSize: '0.75rem', color: 'var(--muted, #888)' }}>または</span>
-          <div style={{ flex: 1, height: 1, background: 'var(--border, #333)' }} />
-        </div>
-        <div className="field" style={{ marginBottom: 0 }}>
-          <label className="label">既存画像をアップロードして LGTM を追加</label>
-          <input ref={fileInputRef} type="file" accept="image/*" style={{ display: 'none' }} onChange={handleImageUpload} />
-          <button
-            type="button"
-            className="actionBtn btnDownload"
-            style={{ fontSize: '0.85rem' }}
-            onClick={() => fileInputRef.current?.click()}
-          >
-            📎 画像を選択
-          </button>
-          <p className="hint" style={{ marginTop: 4 }}>選択中の Size（{size}）に合わせてリサイズします</p>
+        {/* Image Prompt */}
+        <div className="field">
+          <label className="label">Image Prompt</label>
+          <textarea
+            className="textarea"
+            rows={3}
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder={'例: a cute shiba inu sitting in a meadow, watercolor style\n※英語推奨'}
+          />
         </div>
 
-        <hr className="divider" />
+        <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className={`generateBtn ${loading ? 'loading' : ''}`}
+            onClick={generate}
+            disabled={loading}
+            style={{ flex: 1, minWidth: 140 }}
+          >
+            {loading ? '⏳ Generating... (20〜60秒かかります)' : '▶ Generate'}
+          </button>
+          {hasImageSearch && (
+            <button
+              type="button"
+              className={`generateBtn btnSearch ${searchLoading ? 'loading' : ''}`}
+              onClick={search}
+              disabled={searchLoading}
+              style={{ flex: 1, minWidth: 140 }}
+            >
+              {searchLoading ? '⏳ 検索中...' : '🔍 Search'}
+            </button>
+          )}
+        </div>
+        {status && <div className={`status ${status.type}`}>{status.msg}</div>}
+
+        {searchResults && searchResults.length > 0 && (
+          <div style={{ marginTop: 20 }}>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <p className="label" style={{ margin: 0 }}>検索結果から画像を選択</p>
+              <button
+                type="button"
+                onClick={() => setSearchResults(null)}
+                style={{
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--muted, #888)',
+                  cursor: 'pointer',
+                  fontSize: '0.75rem',
+                }}
+              >
+                閉じる
+              </button>
+            </div>
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fill, minmax(120px, 1fr))',
+                gap: 10,
+                marginTop: 12,
+              }}
+            >
+              {searchResults.map((item, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  onClick={() => handleSearchImageSelect(item.link)}
+                  style={{
+                    padding: 0,
+                    border: '2px solid var(--border, #333)',
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    background: 'transparent',
+                    overflow: 'hidden',
+                  }}
+                  onMouseOver={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--accent, #00ff88)';
+                  }}
+                  onMouseOut={(e) => {
+                    e.currentTarget.style.borderColor = 'var(--border, #333)';
+                  }}
+                >
+                  <img
+                    src={item.thumbnailLink}
+                    alt={item.title}
+                    style={{ width: '100%', height: 100, objectFit: 'cover', display: 'block' }}
+                  />
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div className="field">
           <label className="label">LGTM テキストスタイル</label>
@@ -484,16 +682,6 @@ export default function App() {
             </div>
           </div>
         </div>
-
-        <button
-          type="button"
-          className={`generateBtn ${loading ? 'loading' : ''}`}
-          onClick={generate}
-          disabled={loading}
-        >
-          {loading ? '⏳ Generating... (20〜60秒かかります)' : '▶ Generate'}
-        </button>
-        {status && <div className={`status ${status.type}`}>{status.msg}</div>}
       </div>
 
       <div className="resultArea" ref={resultAreaRef} style={{ display: lastImg && page === 'generator' ? 'block' : 'none' }}>

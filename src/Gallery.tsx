@@ -1,5 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
-import { deleteImage, getAllImages, StoredImage } from './imageStore';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { deleteImage, getAllImages, saveImage, StoredImage } from './imageStore';
 
 interface CloudinaryImage {
   secure_url: string;
@@ -10,45 +10,114 @@ interface CloudinaryImage {
 type DisplayImage = (StoredImage & { source: 'local' }) | (CloudinaryImage & { source: 'cloudinary' });
 
 interface Props {
-  onBack: () => void;
   hasCloudinaryAdmin?: boolean;
 }
 
-export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
+export default function Gallery({ hasCloudinaryAdmin }: Props) {
   const [localImages, setLocalImages] = useState<StoredImage[]>([]);
   const [cloudinaryImages, setCloudinaryImages] = useState<CloudinaryImage[]>([]);
-  const [viewMode, setViewMode] = useState<'local' | 'cloudinary'>('local');
+  const [viewMode, setViewMode] = useState<'local' | 'cloudinary'>(hasCloudinaryAdmin ? 'cloudinary' : 'local');
   const [cloudinaryLoading, setCloudinaryLoading] = useState(false);
   const [cloudinaryError, setCloudinaryError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<DisplayImage | null>(null);
   const [copyMsg, setCopyMsg] = useState<string | null>(null);
+  const [favoriteMsg, setFavoriteMsg] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+  const [favoriteLoading, setFavoriteLoading] = useState(false);
   const copyTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const fetchCloudinaryImages = useCallback(
+    async (nextCursor?: string) => {
+      if (!hasCloudinaryAdmin) return;
+      setCloudinaryLoading(true);
+      setCloudinaryError(null);
+      try {
+        const params = nextCursor ? `?next_cursor=${encodeURIComponent(nextCursor)}` : '';
+        const res = await fetch(`/api/cloudinary-images${params}`);
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || res.statusText);
+        setCloudinaryImages((prev) => (nextCursor ? [...prev, ...data.resources] : data.resources));
+      } catch (err) {
+        setCloudinaryError((err as Error).message);
+      } finally {
+        setCloudinaryLoading(false);
+      }
+    },
+    [hasCloudinaryAdmin]
+  );
 
   useEffect(() => {
     getAllImages().then(setLocalImages).catch(console.error);
   }, []);
 
-  const fetchCloudinaryImages = async (nextCursor?: string) => {
-    if (!hasCloudinaryAdmin) return;
-    setCloudinaryLoading(true);
-    setCloudinaryError(null);
-    try {
-      const params = nextCursor ? `?next_cursor=${encodeURIComponent(nextCursor)}` : '';
-      const res = await fetch(`/api/cloudinary-images${params}`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || res.statusText);
-      setCloudinaryImages((prev) => (nextCursor ? [...prev, ...data.resources] : data.resources));
-    } catch (err) {
-      setCloudinaryError((err as Error).message);
-    } finally {
-      setCloudinaryLoading(false);
+  useEffect(() => {
+    if (hasCloudinaryAdmin && viewMode === 'cloudinary' && cloudinaryImages.length === 0 && !cloudinaryLoading) {
+      fetchCloudinaryImages();
     }
-  };
+  }, [hasCloudinaryAdmin, viewMode, cloudinaryImages.length, cloudinaryLoading, fetchCloudinaryImages]);
 
   const handleDelete = async (id: number) => {
     await deleteImage(id).catch(console.error);
     setLocalImages((prev) => prev.filter((img) => img.id !== id));
     if (expanded && expanded.source === 'local' && expanded.id === id) setExpanded(null);
+  };
+
+  const handleAddToFavorites = async (img: CloudinaryImage) => {
+    setFavoriteLoading(true);
+    setFavoriteMsg(null);
+    try {
+      const res = await fetch(`/api/fetch-image?url=${encodeURIComponent(img.secure_url)}`);
+      const text = await res.text();
+      let data: { dataUrl?: string; error?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error('API が正しく応答しませんでした。npm run dev でサーバーが起動しているか確認してください。');
+      }
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      const { dataUrl } = data;
+      if (!dataUrl) throw new Error('画像の取得に失敗しました');
+      await saveImage({
+        dataUrl,
+        prompt: img.public_id,
+        model: 'Cloudinary',
+        timestamp: Date.now(),
+        cloudinaryUrl: img.secure_url,
+      });
+      const updated = await getAllImages();
+      setLocalImages(updated);
+      setFavoriteMsg({ type: 'success', msg: '⭐ お気に入りに追加しました' });
+      setTimeout(() => setFavoriteMsg(null), 3000);
+    } catch (err) {
+      setFavoriteMsg({ type: 'error', msg: (err as Error).message });
+      setTimeout(() => setFavoriteMsg(null), 4000);
+    } finally {
+      setFavoriteLoading(false);
+    }
+  };
+
+  const handleDeleteCloudinary = async (publicId: string) => {
+    try {
+      const res = await fetch('/api/cloudinary-delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ public_id: publicId }),
+      });
+      const text = await res.text();
+      let data: { error?: string };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        setCloudinaryError(
+          'API が HTML を返しました。npm run dev で Vite と Express の両方が起動しているか確認してください。'
+        );
+        return;
+      }
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      setCloudinaryImages((prev) => prev.filter((img) => img.public_id !== publicId));
+      if (expanded && expanded.source === 'cloudinary' && expanded.public_id === publicId) setExpanded(null);
+    } catch (err) {
+      setCloudinaryError((err as Error).message);
+    }
   };
 
   const getDisplayUrl = (img: DisplayImage) =>
@@ -87,9 +156,6 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 12, marginBottom: 20, flexWrap: 'wrap' }}>
-        <button type="button" className="actionBtn btnDownload" onClick={onBack} style={{ padding: '6px 14px' }}>
-          ← Generator
-        </button>
         {hasCloudinaryAdmin && (
           <div style={{ display: 'flex', gap: 4 }}>
             <button
@@ -134,6 +200,11 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
           </button>
         )}
         {copyMsg && <span style={{ color: '#27ae60', fontSize: '0.8rem' }}>{copyMsg}</span>}
+        {favoriteMsg && (
+          <span style={{ color: favoriteMsg.type === 'success' ? '#27ae60' : '#e74c3c', fontSize: '0.8rem' }}>
+            {favoriteMsg.msg}
+          </span>
+        )}
       </div>
 
       {viewMode === 'cloudinary' && cloudinaryLoading && (
@@ -191,15 +262,36 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
               {img.source === 'local' && img.cloudinaryUrl && (
                 <p style={{ fontSize: '0.6rem', color: 'var(--muted)', margin: '0 0 6px 0' }}>☁ Cloudinary</p>
               )}
-              <div style={{ display: 'flex', gap: 4 }}>
+              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                 {(img.source === 'cloudinary' || (img.source === 'local' && img.cloudinaryUrl)) && (
                   <button
                     type="button"
                     className="actionBtn btnCopy"
-                    style={{ flex: 1, fontSize: '0.65rem', padding: '4px 0' }}
+                    style={{ flex: 1, fontSize: '0.65rem', padding: '4px 0', minWidth: 0 }}
                     onClick={() => copy(img)}
                   >
                     ⎘ Copy
+                  </button>
+                )}
+                {img.source === 'cloudinary' && (
+                  <button
+                    type="button"
+                    disabled={favoriteLoading}
+                    style={{
+                      flex: 1,
+                      fontSize: '0.65rem',
+                      padding: '4px 0',
+                      background: '#f39c12',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 4,
+                      cursor: favoriteLoading ? 'not-allowed' : 'pointer',
+                      minWidth: 0,
+                      opacity: favoriteLoading ? 0.7 : 1,
+                    }}
+                    onClick={() => handleAddToFavorites(img)}
+                  >
+                    ⭐
                   </button>
                 )}
                 {img.source === 'local' && img.id !== undefined && (
@@ -216,6 +308,24 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
                       cursor: 'pointer',
                     }}
                     onClick={() => handleDelete(img.id!)}
+                  >
+                    削除
+                  </button>
+                )}
+                {img.source === 'cloudinary' && (
+                  <button
+                    type="button"
+                    style={{
+                      flex: 1,
+                      fontSize: '0.65rem',
+                      padding: '4px 0',
+                      background: '#c0392b',
+                      color: '#fff',
+                      border: 'none',
+                      borderRadius: 4,
+                      cursor: 'pointer',
+                    }}
+                    onClick={() => handleDeleteCloudinary(img.public_id)}
                   >
                     削除
                   </button>
@@ -248,13 +358,32 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
             style={{ maxWidth: '90vw', maxHeight: '75vh', borderRadius: 8, boxShadow: '0 8px 32px rgba(0,0,0,0.5)' }}
             onClick={(e) => e.stopPropagation()}
           />
-          <div style={{ display: 'flex', gap: 8, marginTop: 14 }} onClick={(e) => e.stopPropagation()}>
+          <div style={{ display: 'flex', gap: 8, marginTop: 14, flexWrap: 'wrap' }} onClick={(e) => e.stopPropagation()}>
             <button type="button" className="actionBtn btnCopy" onClick={() => copy(expanded)}>
               ⎘ Copy Markdown
             </button>
             <button type="button" className="actionBtn btnDownload" onClick={() => setExpanded(null)}>
               閉じる
             </button>
+            {expanded.source === 'cloudinary' && (
+              <button
+                type="button"
+                disabled={favoriteLoading}
+                style={{
+                  background: '#f39c12',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  padding: '6px 12px',
+                  cursor: favoriteLoading ? 'not-allowed' : 'pointer',
+                  fontSize: '0.85rem',
+                  opacity: favoriteLoading ? 0.7 : 1,
+                }}
+                onClick={() => handleAddToFavorites(expanded)}
+              >
+                ⭐ お気に入り
+              </button>
+            )}
             {expanded.source === 'local' && expanded.id !== undefined && (
               <button
                 type="button"
@@ -268,6 +397,23 @@ export default function Gallery({ onBack, hasCloudinaryAdmin }: Props) {
                   fontSize: '0.85rem',
                 }}
                 onClick={() => handleDelete(expanded.id!)}
+              >
+                削除
+              </button>
+            )}
+            {expanded.source === 'cloudinary' && (
+              <button
+                type="button"
+                style={{
+                  background: '#c0392b',
+                  color: '#fff',
+                  border: 'none',
+                  borderRadius: 4,
+                  padding: '6px 12px',
+                  cursor: 'pointer',
+                  fontSize: '0.85rem',
+                }}
+                onClick={() => handleDeleteCloudinary(expanded.public_id)}
               >
                 削除
               </button>

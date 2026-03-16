@@ -17,7 +17,6 @@ const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || null;
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || null;
 const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || null;
 const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || null;
-
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/config', (req, res) => {
@@ -25,6 +24,7 @@ app.get('/api/config', (req, res) => {
     useServerToken: !!HF_TOKEN,
     hasUpload: !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET),
     hasCloudinaryAdmin: !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET),
+    hasImageSearch: true, // DuckDuckGo 使用、API キー不要
   });
 });
 
@@ -114,6 +114,88 @@ app.post('/api/upload', async (req, res) => {
 });
 
 /**
+ * 画像検索（DuckDuckGo 使用、API キー不要）
+ * Google Custom Search API は新規利用停止のため DuckDuckGo に切り替え
+ */
+app.get('/api/image-search', async (req, res) => {
+  const { q } = req.query;
+  if (!q || typeof q !== 'string') {
+    return res.status(400).json({ error: 'q (query) required' });
+  }
+  const query = q.trim();
+  if (!query) return res.status(400).json({ error: 'q (query) required' });
+
+  const headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'application/json, text/javascript, */*; q=0.01',
+    'Referer': 'https://duckduckgo.com/',
+  };
+
+  try {
+    // 1. Get vqd token from DuckDuckGo
+    const pageRes = await fetch(`https://duckduckgo.com/?q=${encodeURIComponent(query)}`, {
+      headers: { ...headers, 'Accept-Language': 'ja,en-US;q=0.9,en;q=0.8' },
+    });
+    const pageHtml = await pageRes.text();
+    const vqdMatch = pageHtml.match(/vqd=([\d-]+)/) || pageHtml.match(/vqd["']?\s*[:=]\s*["']?([\d-]+)/);
+    const vqd = vqdMatch ? vqdMatch[1] : null;
+    if (!vqd) {
+      console.error('[api/image-search] vqd token not found');
+      return res.status(502).json({ error: 'DuckDuckGo の検索に失敗しました。しばらく待って再試行してください。' });
+    }
+
+    // 2. Fetch image results
+    const params = new URLSearchParams({
+      l: 'wt-wt',
+      o: 'json',
+      q: query,
+      vqd,
+      f: ',,,',
+      p: '1',
+      v7exp: 'a',
+    });
+    const apiRes = await fetch(`https://duckduckgo.com/i.js?${params}`, { headers });
+    const data = await apiRes.json();
+    const results = data.results || [];
+    const items = results.slice(0, 10).map((r) => ({
+      link: r.image || r.url || r.thumbnail,
+      thumbnailLink: r.thumbnail || r.image || r.url,
+      title: r.title || '',
+    }));
+    res.json({ items });
+  } catch (e) {
+    console.error('[api/image-search]', e);
+    const message = (e && typeof e === 'object' && 'message' in e && e.message) || 'Search error';
+    res.status(502).json({ error: message });
+  }
+});
+
+/**
+ * 画像 URL を取得して base64 で返す（お気に入り登録用）
+ */
+app.get('/api/fetch-image', async (req, res) => {
+  const { url } = req.query;
+  if (!url || typeof url !== 'string') {
+    return res.status(400).json({ error: 'url required' });
+  }
+  if (!url.startsWith('https://')) {
+    return res.status(400).json({ error: 'Invalid url' });
+  }
+  try {
+    const imgRes = await fetch(url);
+    if (!imgRes.ok) throw new Error(`Fetch failed: ${imgRes.status}`);
+    const buf = Buffer.from(await imgRes.arrayBuffer());
+    const contentType = imgRes.headers.get('content-type') || 'image/png';
+    const base64 = buf.toString('base64');
+    res.json({ dataUrl: `data:${contentType};base64,${base64}` });
+  } catch (e) {
+    console.error('[api/fetch-image]', e);
+    const message = (e && typeof e === 'object' && 'message' in e && e.message) || 'Fetch error';
+    res.status(502).json({ error: message });
+  }
+});
+
+/**
  * Cloudinary Admin API で画像一覧を取得（他環境でアップロードした画像も含む）
  */
 app.get('/api/cloudinary-images', async (req, res) => {
@@ -144,6 +226,46 @@ app.get('/api/cloudinary-images', async (req, res) => {
   } catch (e) {
     console.error('[api/cloudinary-images]', e);
     const message = (e && typeof e === 'object' && 'message' in e && e.message) || 'Cloudinary fetch error';
+    res.status(502).json({ error: message });
+  }
+});
+
+/**
+ * Cloudinary Admin API で画像を削除
+ */
+app.post('/api/cloudinary-delete', async (req, res) => {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
+    return res.status(400).json({ error: 'Cloudinary Admin API not configured.' });
+  }
+  const { public_id: publicId } = req.body;
+  if (!publicId || typeof publicId !== 'string') {
+    return res.status(400).json({ error: 'public_id required' });
+  }
+  try {
+    const auth = Buffer.from(`${CLOUDINARY_API_KEY}:${CLOUDINARY_API_SECRET}`).toString('base64');
+    const body = new URLSearchParams();
+    body.append('public_ids[]', publicId);
+    const cloudRes = await fetch(
+      `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/resources/image/upload`,
+      {
+        method: 'DELETE',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: body.toString(),
+      }
+    );
+    const data = await cloudRes.json();
+    if (!cloudRes.ok) {
+      const errMsg = data.error?.message || 'Cloudinary delete failed';
+      console.error('[api/cloudinary-delete]', errMsg);
+      return res.status(502).json({ error: errMsg });
+    }
+    res.json({ deleted: publicId });
+  } catch (e) {
+    console.error('[api/cloudinary-delete]', e);
+    const message = (e && typeof e === 'object' && 'message' in e && e.message) || 'Cloudinary fetch error';
     res.status(502).json({ error: String(message) });
   }
 });
@@ -168,4 +290,5 @@ app.listen(PORT, () => {
   if (CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
     console.log('Cloudinary Admin API: Cloudinary tab enabled in gallery');
   }
+  console.log('Image Search: SEARCH button enabled (DuckDuckGo)');
 });
