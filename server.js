@@ -15,11 +15,17 @@ const PORT = process.env.PORT || 3000;
 const HF_TOKEN = process.env.HF_TOKEN || process.env.HUGGING_FACE_TOKEN || null;
 const CLOUDINARY_CLOUD_NAME = process.env.CLOUDINARY_CLOUD_NAME || null;
 const CLOUDINARY_UPLOAD_PRESET = process.env.CLOUDINARY_UPLOAD_PRESET || null;
+const CLOUDINARY_API_KEY = process.env.CLOUDINARY_API_KEY || null;
+const CLOUDINARY_API_SECRET = process.env.CLOUDINARY_API_SECRET || null;
 
 app.use(express.json({ limit: '10mb' }));
 
 app.get('/api/config', (req, res) => {
-  res.json({ useServerToken: !!HF_TOKEN, hasUpload: !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET) });
+  res.json({
+    useServerToken: !!HF_TOKEN,
+    hasUpload: !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_UPLOAD_PRESET),
+    hasCloudinaryAdmin: !!(CLOUDINARY_CLOUD_NAME && CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET),
+  });
 });
 
 /**
@@ -107,6 +113,41 @@ app.post('/api/upload', async (req, res) => {
   }
 });
 
+/**
+ * Cloudinary Admin API で画像一覧を取得（他環境でアップロードした画像も含む）
+ */
+app.get('/api/cloudinary-images', async (req, res) => {
+  if (!CLOUDINARY_CLOUD_NAME || !CLOUDINARY_API_KEY || !CLOUDINARY_API_SECRET) {
+    return res.status(400).json({ error: 'Cloudinary Admin API not configured. Set CLOUDINARY_API_KEY and CLOUDINARY_API_SECRET.' });
+  }
+  const { next_cursor: nextCursor } = req.query;
+  try {
+    const params = new URLSearchParams({ max_results: '100', type: 'upload' });
+    if (typeof nextCursor === 'string' && nextCursor) params.set('next_cursor', nextCursor);
+    const url = `https://api.cloudinary.com/v1_1/${CLOUDINARY_CLOUD_NAME}/resources/image/upload?${params}`;
+    const auth = Buffer.from(`${CLOUDINARY_API_KEY}:${CLOUDINARY_API_SECRET}`).toString('base64');
+    const cloudRes = await fetch(url, {
+      headers: { Authorization: `Basic ${auth}` },
+    });
+    const data = await cloudRes.json();
+    if (!cloudRes.ok) {
+      const errMsg = data.error?.message || 'Cloudinary Admin API failed';
+      console.error('[api/cloudinary-images]', errMsg);
+      return res.status(502).json({ error: errMsg });
+    }
+    const resources = (data.resources || []).map((r) => ({
+      secure_url: r.secure_url,
+      public_id: r.public_id,
+      created_at: r.created_at,
+    }));
+    res.json({ resources, next_cursor: data.next_cursor || null });
+  } catch (e) {
+    console.error('[api/cloudinary-images]', e);
+    const message = (e && typeof e === 'object' && 'message' in e && e.message) || 'Cloudinary fetch error';
+    res.status(502).json({ error: String(message) });
+  }
+});
+
 const distPath = path.join(__dirname, 'dist');
 if (fs.existsSync(distPath)) {
   app.use(express.static(distPath));
@@ -123,5 +164,8 @@ app.listen(PORT, () => {
     console.log('Cloudinary configured: upload enabled');
   } else {
     console.log('Cloudinary not set: add CLOUDINARY_CLOUD_NAME and CLOUDINARY_UPLOAD_PRESET to .env for favorites');
+  }
+  if (CLOUDINARY_API_KEY && CLOUDINARY_API_SECRET) {
+    console.log('Cloudinary Admin API: Cloudinary tab enabled in gallery');
   }
 });
